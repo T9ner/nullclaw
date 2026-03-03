@@ -65,12 +65,14 @@ fn parseCommand(arg: []const u8) ?Command {
     return command_map.get(arg);
 }
 
+extern "kernel32" fn SetConsoleCP(wCodePageID: std.os.windows.UINT) callconv(.winapi) std.os.windows.BOOL;
+
 fn configureWindowsConsoleUtf8() void {
     if (comptime builtin.os.tag == .windows) {
         // Set both output and input code pages to UTF-8 so interactive
         // terminal sessions preserve non-ASCII user input.
         _ = std.os.windows.kernel32.SetConsoleOutputCP(65001);
-        _ = std.os.windows.kernel32.SetConsoleCP(65001);
+        _ = SetConsoleCP(65001);
     }
 }
 
