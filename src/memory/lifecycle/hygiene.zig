@@ -11,9 +11,14 @@ const build_options = @import("build_options");
 const root = @import("../root.zig");
 const Memory = root.Memory;
 const sqlite_mod = if (build_options.enable_sqlite) @import("../engines/sqlite.zig") else @import("../engines/sqlite_disabled.zig");
+const chunker = @import("../vector/chunker.zig");
+const log = std.log.scoped(.memory_hygiene);
 
 /// Default hygiene interval in seconds (12 hours).
 const HYGIENE_INTERVAL_SECS: i64 = 12 * 60 * 60;
+const ARCHIVE_READ_MAX_BYTES: usize = 1024 * 1024;
+const ARCHIVE_CHUNK_MAX_TOKENS: usize = 512;
+const ARCHIVE_CATEGORY = root.MemoryCategory{ .custom = "archive" };
 
 /// KV key used to track last hygiene run time.
 const LAST_HYGIENE_KEY = "last_hygiene_at";
@@ -35,6 +40,7 @@ pub const HygieneConfig = struct {
     archive_after_days: u32 = 7,
     purge_after_days: u32 = 30,
     conversation_retention_days: u32 = 30,
+    preserve_before_purge: bool = true,
     workspace_dir: []const u8 = "",
 };
 
@@ -54,13 +60,18 @@ pub fn runIfDue(allocator: std.mem.Allocator, config: HygieneConfig, mem: ?Memor
 
     // Purge expired archives
     if (config.purge_after_days > 0) {
-        report.purged_memory_archives = purgeOldArchives(allocator, config) catch 0;
+        report.purged_memory_archives = purgeOldArchives(allocator, config, mem) catch 0;
     }
 
     // Prune old conversation rows
     if (config.conversation_retention_days > 0) {
         if (mem) |m| {
-            report.pruned_conversation_rows = pruneConversationRows(allocator, m, config.conversation_retention_days) catch 0;
+            report.pruned_conversation_rows = pruneConversationRowsWithPreserve(
+                allocator,
+                m,
+                config.conversation_retention_days,
+                config.preserve_before_purge,
+            ) catch 0;
         }
     }
 
@@ -154,7 +165,7 @@ fn archiveOldFiles(allocator: std.mem.Allocator, config: HygieneConfig) !u64 {
 }
 
 /// Purge archived files older than the retention period.
-fn purgeOldArchives(allocator: std.mem.Allocator, config: HygieneConfig) !u64 {
+fn purgeOldArchives(allocator: std.mem.Allocator, config: HygieneConfig, mem: ?Memory) !u64 {
     const archive_path = try std.fs.path.join(allocator, &.{ config.workspace_dir, "memory", "archive" });
     defer allocator.free(archive_path);
 
@@ -172,6 +183,13 @@ fn purgeOldArchives(allocator: std.mem.Allocator, config: HygieneConfig) !u64 {
         const mtime_secs: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
         if (mtime_secs >= cutoff_secs) continue;
 
+        if (config.preserve_before_purge and mem != null and std.mem.endsWith(u8, entry.name, ".md")) {
+            preserveArchiveFile(allocator, archive_dir, entry.name, mem.?) catch |err| {
+                log.warn("skipping purge for '{s}' because preservation failed: {}", .{ entry.name, err });
+                continue;
+            };
+        }
+
         archive_dir.deleteFile(entry.name) catch continue;
         removed += 1;
     }
@@ -179,9 +197,68 @@ fn purgeOldArchives(allocator: std.mem.Allocator, config: HygieneConfig) !u64 {
     return removed;
 }
 
+fn preserveArchiveFile(
+    allocator: std.mem.Allocator,
+    archive_dir: std.fs.Dir,
+    file_name: []const u8,
+    mem: Memory,
+) !void {
+    const content = try archive_dir.readFileAlloc(allocator, file_name, ARCHIVE_READ_MAX_BYTES);
+    defer allocator.free(content);
+    if (std.mem.trim(u8, content, " \t\r\n").len == 0) return;
+
+    const chunks = try chunker.chunkMarkdown(allocator, content, ARCHIVE_CHUNK_MAX_TOKENS);
+    defer chunker.freeChunks(allocator, chunks);
+    if (chunks.len == 0) return;
+
+    for (chunks, 0..) |chunk, idx| {
+        const key = try std.fmt.allocPrint(allocator, "archive:{s}:chunk:{d}", .{ file_name, idx });
+        defer allocator.free(key);
+        const wrapped = try std.fmt.allocPrint(
+            allocator,
+            "Archived source: {s}\nChunk: {d}/{d}\n\n{s}",
+            .{ file_name, idx + 1, chunks.len, chunk.content },
+        );
+        defer allocator.free(wrapped);
+        try mem.store(key, wrapped, ARCHIVE_CATEGORY, null);
+    }
+}
+
+fn preserveConversationEntry(
+    allocator: std.mem.Allocator,
+    mem: Memory,
+    key_prefix: []const u8,
+    content: []const u8,
+) !void {
+    const chunks = try chunker.chunkMarkdown(allocator, content, ARCHIVE_CHUNK_MAX_TOKENS);
+    defer chunker.freeChunks(allocator, chunks);
+    if (chunks.len == 0) return;
+
+    for (chunks, 0..) |chunk, idx| {
+        const archive_key = try std.fmt.allocPrint(allocator, "{s}:chunk:{d}", .{ key_prefix, idx });
+        defer allocator.free(archive_key);
+        const wrapped = try std.fmt.allocPrint(
+            allocator,
+            "Archived conversation source: {s}\nChunk: {d}/{d}\n\n{s}",
+            .{ key_prefix, idx + 1, chunks.len, chunk.content },
+        );
+        defer allocator.free(wrapped);
+        try mem.store(archive_key, wrapped, ARCHIVE_CATEGORY, null);
+    }
+}
+
 /// Prune conversation rows older than retention_days via the Memory interface.
 /// Searches for conversation-tagged entries and deletes those whose timestamp is old.
 pub fn pruneConversationRows(allocator: std.mem.Allocator, mem: Memory, retention_days: u32) !u64 {
+    return pruneConversationRowsWithPreserve(allocator, mem, retention_days, false);
+}
+
+fn pruneConversationRowsWithPreserve(
+    allocator: std.mem.Allocator,
+    mem: Memory,
+    retention_days: u32,
+    preserve_before_forget: bool,
+) !u64 {
     const cutoff_secs = std.time.timestamp() - @as(i64, @intCast(retention_days)) * 24 * 60 * 60;
 
     // Search for conversation-tagged entries
@@ -197,6 +274,14 @@ pub fn pruneConversationRows(allocator: std.mem.Allocator, mem: Memory, retentio
         // Parse timestamp from entry key (format: "conv_<timestamp>_<id>")
         const ts = parseConversationTimestamp(entry.key) orelse continue;
         if (ts < cutoff_secs) {
+            if (preserve_before_forget) {
+                const preserve_key_prefix = try std.fmt.allocPrint(allocator, "archive:conversation:{s}", .{entry.key});
+                defer allocator.free(preserve_key_prefix);
+                preserveConversationEntry(allocator, mem, preserve_key_prefix, entry.content) catch |err| {
+                    log.warn("skipping prune for '{s}' because preservation failed: {}", .{ entry.key, err });
+                    continue;
+                };
+            }
             _ = mem.forget(entry.key) catch continue;
             pruned += 1;
         }
@@ -332,4 +417,124 @@ test "R3: parseConversationTimestamp key with only prefix" {
 test "R3: parseConversationTimestamp key without trailing id" {
     const ts = parseConversationTimestamp("conv_1700000000");
     try std.testing.expectEqual(@as(i64, 1700000000), ts.?);
+}
+
+test "runIfDue preserves archived markdown chunks before purge" {
+    if (!build_options.enable_sqlite) return;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const workspace_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(workspace_dir);
+
+    const archive_path = try std.fs.path.join(std.testing.allocator, &.{ workspace_dir, "memory", "archive" });
+    defer std.testing.allocator.free(archive_path);
+    try std.fs.cwd().makePath(archive_path);
+
+    var archive_dir = try std.fs.cwd().openDir(archive_path, .{});
+    defer archive_dir.close();
+
+    var file = try archive_dir.createFile("old-memory.md", .{});
+    try file.writeAll("# Heading\nThis old memory should be preserved before purge.");
+    try file.updateTimes(0, 0);
+    file.close();
+
+    var mem_impl = try sqlite_mod.SqliteMemory.init(std.testing.allocator, ":memory:");
+    defer mem_impl.deinit();
+    const mem = mem_impl.memory();
+
+    const report = runIfDue(std.testing.allocator, .{
+        .hygiene_enabled = true,
+        .archive_after_days = 0,
+        .purge_after_days = 1,
+        .conversation_retention_days = 0,
+        .preserve_before_purge = true,
+        .workspace_dir = workspace_dir,
+    }, mem);
+
+    try std.testing.expectEqual(@as(u64, 1), report.purged_memory_archives);
+    try std.testing.expect((archive_dir.statFile("old-memory.md") catch null) == null);
+
+    const preserved = try mem.list(std.testing.allocator, .{ .custom = "archive" }, null);
+    defer root.freeEntries(std.testing.allocator, preserved);
+
+    var found = false;
+    for (preserved) |entry| {
+        if (std.mem.startsWith(u8, entry.key, "archive:old-memory.md:chunk:")) {
+            found = true;
+            try std.testing.expect(std.mem.indexOf(u8, entry.content, "Archived source: old-memory.md") != null);
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "runIfDue deletes old archives when memory is unavailable" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const workspace_dir = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(workspace_dir);
+
+    const archive_path = try std.fs.path.join(std.testing.allocator, &.{ workspace_dir, "memory", "archive" });
+    defer std.testing.allocator.free(archive_path);
+    try std.fs.cwd().makePath(archive_path);
+
+    var archive_dir = try std.fs.cwd().openDir(archive_path, .{});
+    defer archive_dir.close();
+
+    var file = try archive_dir.createFile("old-memory.md", .{});
+    try file.writeAll("Legacy archive content.");
+    try file.updateTimes(0, 0);
+    file.close();
+
+    const report = runIfDue(std.testing.allocator, .{
+        .hygiene_enabled = true,
+        .archive_after_days = 0,
+        .purge_after_days = 1,
+        .conversation_retention_days = 0,
+        .preserve_before_purge = true,
+        .workspace_dir = workspace_dir,
+    }, null);
+
+    try std.testing.expectEqual(@as(u64, 1), report.purged_memory_archives);
+    try std.testing.expect((archive_dir.statFile("old-memory.md") catch null) == null);
+}
+
+test "runIfDue preserves conversation rows before prune when enabled" {
+    if (!build_options.enable_sqlite) return;
+
+    var mem_impl = try sqlite_mod.SqliteMemory.init(std.testing.allocator, ":memory:");
+    defer mem_impl.deinit();
+    const mem = mem_impl.memory();
+
+    try mem.store("conv_1_old", "conversation message that should be archived", .conversation, null);
+
+    const report = runIfDue(std.testing.allocator, .{
+        .hygiene_enabled = true,
+        .archive_after_days = 0,
+        .purge_after_days = 0,
+        .conversation_retention_days = 1,
+        .preserve_before_purge = true,
+        .workspace_dir = "/tmp",
+    }, mem);
+
+    try std.testing.expectEqual(@as(u64, 1), report.pruned_conversation_rows);
+    const maybe_old = try mem.get(std.testing.allocator, "conv_1_old");
+    if (maybe_old) |entry| {
+        defer entry.deinit(std.testing.allocator);
+    }
+    try std.testing.expect(maybe_old == null);
+
+    const preserved = try mem.list(std.testing.allocator, .{ .custom = "archive" }, null);
+    defer root.freeEntries(std.testing.allocator, preserved);
+
+    var found = false;
+    for (preserved) |entry| {
+        if (std.mem.startsWith(u8, entry.key, "archive:conversation:conv_1_old:chunk:")) {
+            found = true;
+            try std.testing.expect(std.mem.indexOf(u8, entry.content, "Archived conversation source: archive:conversation:conv_1_old") != null);
+        }
+    }
+    try std.testing.expect(found);
 }

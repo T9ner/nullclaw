@@ -713,6 +713,7 @@ pub fn initRuntime(
             .hygiene_enabled = true,
             .archive_after_days = config.lifecycle.archive_after_days,
             .purge_after_days = config.lifecycle.purge_after_days,
+            .preserve_before_purge = config.lifecycle.preserve_before_purge,
             .conversation_retention_days = config.lifecycle.conversation_retention_days,
             .workspace_dir = workspace_dir,
         };
