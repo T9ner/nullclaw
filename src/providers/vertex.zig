@@ -336,8 +336,7 @@ pub const VertexProvider = struct {
         const resp_body = root.curlPostTimed(allocator, url, body, &.{auth_hdr}, request.timeout_secs) catch return error.VertexApiError;
         defer allocator.free(resp_body);
 
-        const text = try gemini.GeminiProvider.parseResponse(allocator, resp_body);
-        return ChatResponse{ .content = text };
+        return try gemini.GeminiProvider.parseChatResponse(allocator, resp_body);
     }
 
     fn streamChatImpl(

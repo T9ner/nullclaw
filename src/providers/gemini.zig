@@ -22,6 +22,82 @@ fn parseExpiresIn(v: std.json.Value) ?i64 {
     };
 }
 
+fn parseTokenCount(v: std.json.Value) ?u32 {
+    return switch (v) {
+        .integer => |i| blk: {
+            if (i < 0) break :blk null;
+            break :blk std.math.cast(u32, i) orelse std.math.maxInt(u32);
+        },
+        .float => |f| blk: {
+            if (!std.math.isFinite(f) or f < 0) break :blk null;
+            const max_u32_f = @as(f64, @floatFromInt(std.math.maxInt(u32)));
+            if (f > max_u32_f) break :blk std.math.maxInt(u32);
+            break :blk @intFromFloat(f);
+        },
+        else => null,
+    };
+}
+
+fn normalizeTokenUsage(usage: *root.TokenUsage) void {
+    if (usage.total_tokens == 0 and (usage.prompt_tokens > 0 or usage.completion_tokens > 0)) {
+        usage.total_tokens = usage.prompt_tokens +| usage.completion_tokens;
+    }
+    if (usage.completion_tokens == 0 and usage.total_tokens > usage.prompt_tokens) {
+        usage.completion_tokens = usage.total_tokens - usage.prompt_tokens;
+    }
+}
+
+fn parseUsageMetadataValue(v: std.json.Value) ?root.TokenUsage {
+    if (v != .object) return null;
+    const usage_obj = v.object;
+
+    var usage = root.TokenUsage{};
+    var found = false;
+
+    if (usage_obj.get("promptTokenCount")) |count| {
+        if (parseTokenCount(count)) |parsed| {
+            usage.prompt_tokens = parsed;
+            found = true;
+        }
+    }
+    if (usage_obj.get("candidatesTokenCount")) |count| {
+        if (parseTokenCount(count)) |parsed| {
+            usage.completion_tokens = parsed;
+            found = true;
+        }
+    }
+    if (usage_obj.get("totalTokenCount")) |count| {
+        if (parseTokenCount(count)) |parsed| {
+            usage.total_tokens = parsed;
+            found = true;
+        }
+    }
+
+    if (!found) return null;
+    normalizeTokenUsage(&usage);
+    return usage;
+}
+
+pub fn extractGeminiUsageMetadata(allocator: std.mem.Allocator, json_str: []const u8) !?root.TokenUsage {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch
+        return error.InvalidSseJson;
+    defer parsed.deinit();
+
+    const usage_val = parsed.value.object.get("usageMetadata") orelse return null;
+    return parseUsageMetadataValue(usage_val);
+}
+
+fn extractGeminiUsageFromSseLine(allocator: std.mem.Allocator, line: []const u8) !?root.TokenUsage {
+    const trimmed = std.mem.trimRight(u8, line, "\r");
+    if (trimmed.len == 0 or trimmed[0] == ':') return null;
+
+    const prefix = "data: ";
+    if (!std.mem.startsWith(u8, trimmed, prefix)) return null;
+    const data = trimmed[prefix.len..];
+
+    return try extractGeminiUsageMetadata(allocator, data);
+}
+
 fn isFormUrlencodedUnreserved(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~';
 }
@@ -519,8 +595,8 @@ pub const GeminiProvider = struct {
         }
     }
 
-    /// Parse text content from a Gemini generateContent response.
-    pub fn parseResponse(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
+    /// Parse text and token usage from a Gemini generateContent response.
+    pub fn parseChatResponse(allocator: std.mem.Allocator, body: []const u8) !ChatResponse {
         const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
         defer parsed.deinit();
         const root_obj = parsed.value.object;
@@ -528,6 +604,13 @@ pub const GeminiProvider = struct {
         // Check for error first
         if (error_classify.classifyKnownApiError(root_obj)) |kind| {
             return error_classify.kindToError(kind);
+        }
+
+        var usage = root.TokenUsage{};
+        if (root_obj.get("usageMetadata")) |usage_val| {
+            if (parseUsageMetadataValue(usage_val)) |parsed_usage| {
+                usage = parsed_usage;
+            }
         }
 
         // Extract text from candidates
@@ -540,7 +623,10 @@ pub const GeminiProvider = struct {
                             const part = parts.array.items[0].object;
                             if (part.get("text")) |text| {
                                 if (text == .string) {
-                                    return try allocator.dupe(u8, text.string);
+                                    return .{
+                                        .content = try allocator.dupe(u8, text.string),
+                                        .usage = usage,
+                                    };
                                 }
                             }
                         }
@@ -550,6 +636,12 @@ pub const GeminiProvider = struct {
         }
 
         return error.NoResponseContent;
+    }
+
+    /// Parse text content from a Gemini generateContent response.
+    pub fn parseResponse(allocator: std.mem.Allocator, body: []const u8) ![]const u8 {
+        const parsed = try parseChatResponse(allocator, body);
+        return parsed.content orelse error.NoResponseContent;
     }
 
     /// Result of parsing a single Gemini SSE line.
@@ -697,6 +789,7 @@ pub const GeminiProvider = struct {
         var line_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer line_buf.deinit(allocator);
 
+        var stream_usage = root.TokenUsage{};
         const file = child.stdout.?;
         var read_buf: [4096]u8 = undefined;
 
@@ -706,6 +799,9 @@ pub const GeminiProvider = struct {
 
             for (read_buf[0..n]) |byte| {
                 if (byte == '\n') {
+                    if (extractGeminiUsageFromSseLine(allocator, line_buf.items) catch null) |usage| {
+                        stream_usage = usage;
+                    }
                     const result = parseGeminiSseLine(allocator, line_buf.items) catch {
                         line_buf.clearRetainingCapacity();
                         continue;
@@ -728,6 +824,9 @@ pub const GeminiProvider = struct {
 
         // Parse trailing line if stream ended without final newline.
         if (line_buf.items.len > 0) {
+            if (extractGeminiUsageFromSseLine(allocator, line_buf.items) catch null) |usage| {
+                stream_usage = usage;
+            }
             const trailing = parseGeminiSseLine(allocator, line_buf.items) catch null;
             line_buf.clearRetainingCapacity();
             if (trailing) |result| {
@@ -763,9 +862,16 @@ pub const GeminiProvider = struct {
         else
             null;
 
+        if (stream_usage.prompt_tokens == 0 and stream_usage.completion_tokens == 0 and stream_usage.total_tokens == 0) {
+            stream_usage.completion_tokens = @intCast((accumulated.items.len + 3) / 4);
+            stream_usage.total_tokens = stream_usage.completion_tokens;
+        } else {
+            normalizeTokenUsage(&stream_usage);
+        }
+
         return .{
             .content = content,
-            .usage = .{ .completion_tokens = @intCast((accumulated.items.len + 3) / 4) },
+            .usage = stream_usage,
             .model = "",
         };
     }
@@ -843,8 +949,7 @@ pub const GeminiProvider = struct {
         };
         defer allocator.free(resp_body);
 
-        const text = try parseResponse(allocator, resp_body);
-        return ChatResponse{ .content = text };
+        return try parseChatResponse(allocator, resp_body);
     }
 
     fn supportsNativeToolsImpl(_: *anyopaque) bool {
@@ -1089,6 +1194,28 @@ test "parseResponse extracts text" {
     try std.testing.expectEqualStrings("Hello there!", result);
 }
 
+test "parseChatResponse extracts usageMetadata token counts" {
+    const body =
+        \\{"candidates":[{"content":{"parts":[{"text":"Hello there!"}]}}],"usageMetadata":{"promptTokenCount":12,"candidatesTokenCount":34,"totalTokenCount":46}}
+    ;
+    const response = try GeminiProvider.parseChatResponse(std.testing.allocator, body);
+    defer std.testing.allocator.free(response.content.?);
+    try std.testing.expectEqualStrings("Hello there!", response.content.?);
+    try std.testing.expectEqual(@as(u32, 12), response.usage.prompt_tokens);
+    try std.testing.expectEqual(@as(u32, 34), response.usage.completion_tokens);
+    try std.testing.expectEqual(@as(u32, 46), response.usage.total_tokens);
+}
+
+test "extractGeminiUsageMetadata derives missing total from prompt and completion" {
+    const json =
+        \\{"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":5}}
+    ;
+    const usage = (try extractGeminiUsageMetadata(std.testing.allocator, json)).?;
+    try std.testing.expectEqual(@as(u32, 7), usage.prompt_tokens);
+    try std.testing.expectEqual(@as(u32, 5), usage.completion_tokens);
+    try std.testing.expectEqual(@as(u32, 12), usage.total_tokens);
+}
+
 test "parseResponse error response" {
     const body =
         \\{"error":{"message":"Invalid API key"}}
@@ -1216,6 +1343,14 @@ test "parseGeminiSseLine valid delta" {
         },
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "extractGeminiUsageFromSseLine parses usageMetadata" {
+    const line = "data: {\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":9,\"totalTokenCount\":12}}";
+    const usage = (try extractGeminiUsageFromSseLine(std.testing.allocator, line)).?;
+    try std.testing.expectEqual(@as(u32, 3), usage.prompt_tokens);
+    try std.testing.expectEqual(@as(u32, 9), usage.completion_tokens);
+    try std.testing.expectEqual(@as(u32, 12), usage.total_tokens);
 }
 
 test "parseGeminiSseLine empty line" {
