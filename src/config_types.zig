@@ -218,11 +218,26 @@ pub const ToolsConfig = struct {
     path_env_vars: []const []const u8 = &.{},
 };
 
+pub const ModelRouteCostClass = enum {
+    free,
+    cheap,
+    standard,
+    premium,
+};
+
+pub const ModelRouteQuotaClass = enum {
+    unlimited,
+    normal,
+    constrained,
+};
+
 pub const ModelRouteConfig = struct {
     hint: []const u8,
     provider: []const u8,
     model: []const u8,
     api_key: ?[]const u8 = null,
+    cost_class: ModelRouteCostClass = .standard,
+    quota_class: ModelRouteQuotaClass = .normal,
 };
 
 pub const HeartbeatConfig = struct {

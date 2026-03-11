@@ -150,6 +150,28 @@ fn parsePeerKind(kind: []const u8) ?agent_routing.ChatType {
     return null;
 }
 
+fn parseModelRouteCostClass(raw: []const u8) ?types.ModelRouteCostClass {
+    if (std.ascii.eqlIgnoreCase(raw, "free")) return .free;
+    if (std.ascii.eqlIgnoreCase(raw, "cheap")) return .cheap;
+    if (std.ascii.eqlIgnoreCase(raw, "standard")) return .standard;
+    if (std.ascii.eqlIgnoreCase(raw, "premium")) return .premium;
+    return null;
+}
+
+fn parseModelRouteQuotaClass(raw: []const u8) ?types.ModelRouteQuotaClass {
+    if (std.ascii.eqlIgnoreCase(raw, "unlimited")) return .unlimited;
+    if (std.ascii.eqlIgnoreCase(raw, "normal")) return .normal;
+    if (std.ascii.eqlIgnoreCase(raw, "constrained")) return .constrained;
+    return null;
+}
+
+fn freeModelRouteConfig(allocator: std.mem.Allocator, route: types.ModelRouteConfig) void {
+    allocator.free(route.hint);
+    allocator.free(route.provider);
+    allocator.free(route.model);
+    if (route.api_key) |api_key| allocator.free(api_key);
+}
+
 fn parseAgentBindingsArray(
     allocator: std.mem.Allocator,
     arr: std.json.Array,
@@ -444,6 +466,10 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
     if (root.get("model_routes")) |v| {
         if (v == .array) {
             var list: std.ArrayListUnmanaged(types.ModelRouteConfig) = .empty;
+            errdefer {
+                for (list.items) |route| freeModelRouteConfig(self.allocator, route);
+                list.deinit(self.allocator);
+            }
             try list.ensureTotalCapacity(self.allocator, @intCast(v.array.items.len));
             for (v.array.items) |item| {
                 if (item == .object) {
@@ -451,15 +477,40 @@ pub fn parseJson(self: *Config, content: []const u8) !void {
                     const provider = item.object.get("provider") orelse continue;
                     const model = item.object.get("model") orelse continue;
                     if (hint != .string or provider != .string or model != .string) continue;
-                    var route = types.ModelRouteConfig{
-                        .hint = try self.allocator.dupe(u8, hint.string),
-                        .provider = try self.allocator.dupe(u8, provider.string),
-                        .model = try self.allocator.dupe(u8, model.string),
-                    };
-                    if (item.object.get("api_key")) |ak| {
-                        if (ak == .string) route.api_key = try self.allocator.dupe(u8, ak.string);
+                    {
+                        const hint_owned = try self.allocator.dupe(u8, hint.string);
+                        errdefer self.allocator.free(hint_owned);
+                        const provider_owned = try self.allocator.dupe(u8, provider.string);
+                        errdefer self.allocator.free(provider_owned);
+                        const model_owned = try self.allocator.dupe(u8, model.string);
+                        errdefer self.allocator.free(model_owned);
+
+                        var route = types.ModelRouteConfig{
+                            .hint = hint_owned,
+                            .provider = provider_owned,
+                            .model = model_owned,
+                        };
+                        errdefer if (route.api_key) |api_key| self.allocator.free(api_key);
+
+                        if (item.object.get("api_key")) |ak| {
+                            if (ak == .string) route.api_key = try self.allocator.dupe(u8, ak.string);
+                        }
+                        if (item.object.get("cost_class")) |cost_class| {
+                            if (cost_class == .string) {
+                                if (parseModelRouteCostClass(cost_class.string)) |parsed_cost_class| {
+                                    route.cost_class = parsed_cost_class;
+                                }
+                            }
+                        }
+                        if (item.object.get("quota_class")) |quota_class| {
+                            if (quota_class == .string) {
+                                if (parseModelRouteQuotaClass(quota_class.string)) |parsed_quota_class| {
+                                    route.quota_class = parsed_quota_class;
+                                }
+                            }
+                        }
+                        try list.append(self.allocator, route);
                     }
-                    try list.append(self.allocator, route);
                 }
             }
             self.model_routes = try list.toOwnedSlice(self.allocator);
