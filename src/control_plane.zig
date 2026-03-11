@@ -68,10 +68,12 @@ const PRIMARY_TELEGRAM_BOT_COMMANDS = [_]TelegramBotCommand{
     .{ .command = "verbose", .description = "Set verbose level" },
     .{ .command = "reasoning", .description = "Set reasoning output" },
     .{ .command = "exec", .description = "Set exec policy" },
+    .{ .command = "allowlist", .description = "Show allowlist" },
     .{ .command = "queue", .description = "Set queue policy" },
     .{ .command = "usage", .description = "Set usage footer mode" },
     .{ .command = "tts", .description = "Set TTS mode" },
     .{ .command = "memory", .description = "Memory tools and diagnostics" },
+    .{ .command = "skill", .description = "List skills" },
     .{ .command = "doctor", .description = "Memory diagnostics quick check" },
     .{ .command = "tasks", .description = "List background tasks" },
     .{ .command = "agents", .description = "Show active agents" },
@@ -240,7 +242,9 @@ test "telegram bot command payload includes grouped menu commands" {
     defer std.testing.allocator.free(json);
 
     try std.testing.expect(std.mem.indexOf(u8, json, "\"command\":\"menu\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"command\":\"allowlist\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"command\":\"memory\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"command\":\"skill\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"command\":\"doctor\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"command\":\"tasks\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"command\":\"poll\"") != null);
