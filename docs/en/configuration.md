@@ -356,7 +356,7 @@ Discord example:
 }
 ```
 
-Discord requires MESSAGE CONTENT INTENT enabled in the Discord Developer Portal (Privileged Gateway Intents section). Without this, the bot cannot read message content.
+Enable MESSAGE CONTENT INTENT in the Discord Developer Portal if you want the bot to process ordinary guild messages. Without it, Discord omits message content for most guild traffic; direct messages and messages that mention the bot still include content.
 
 Gateway intents (`intents`) is a bitmask. Default 37377 = GUILDS (1) + GUILD_MESSAGES (512) + MESSAGE_CONTENT (32768) + DIRECT_MESSAGES (4096). Calculate custom intents from https://discord.com/developers/docs/topics/gateway#gateway-intents.
 
@@ -431,11 +431,11 @@ Parameters:
 - `token` (required) - Bot token from Discord Developer Portal
 - `intents` (default: 37377) - Gateway intents bitmask
 - `allow_bots` (default: false) - Allow messages from other bots
-- `allow_from` (default: []) - Allowed user IDs, empty = deny all, `["*"]` = allow all
+- `allow_from` (default: []) - Optional allowlist of user IDs; empty disables filtering, `["*"]` matches all users
 - `require_mention` (default: false) - Require bot mention in guilds to respond
-- `guild_id` (optional) - Restrict bot to specific server
+- `guild_id` (optional) - Reserved for Discord server scoping; current runtime does not enforce it
 
-NullClaw splits messages >2000 characters (Discord API limit). Use `tunnel` configuration for HTTPS-required webhooks when running without public IP.
+NullClaw splits messages >2000 characters (Discord API limit).
 
 Verification:
 ```bash
@@ -444,8 +444,8 @@ nullclaw channel status
 ```
 
 Common issues:
-- Bot connects but doesn't respond: MESSAGE CONTENT INTENT not enabled, or bot needs re-invite after enabling intents
-- "Privileged Intents" error: MESSAGE CONTENT INTENT must be enabled in Discord Developer Portal; requires bot verification or <100 servers
+- Bot only responds in DMs or explicit mentions: enable MESSAGE CONTENT INTENT, then re-invite the bot if needed
+- "Privileged Intents" error: enable MESSAGE CONTENT INTENT in Discord Developer Portal; verified apps may also need Discord approval
 - Bot offline: Check `nullclaw service status`, verify token hasn't been reset
 - No response in guilds: Check `require_mention` setting, verify Read Messages permission
 
