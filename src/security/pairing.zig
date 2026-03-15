@@ -1,5 +1,6 @@
 const std = @import("std");
 const crypto = @import("../security/secrets.zig");
+const policy = @import("policy.zig");
 
 /// Maximum failed pairing attempts before lockout.
 const MAX_PAIR_ATTEMPTS: u32 = 5;
@@ -271,6 +272,12 @@ pub fn isPublicBind(host: []const u8) bool {
     if (std.mem.eql(u8, host, "[::1]")) return false;
     if (std.mem.eql(u8, host, "0:0:0:0:0:0:0:1")) return false;
     return true;
+}
+
+pub fn isYoloGatewayAllowed(level: policy.AutonomyLevel, host: []const u8, forced: bool) bool {
+    if (level != .yolo) return true;
+    if (forced) return true;
+    return !isPublicBind(host);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────

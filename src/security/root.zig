@@ -38,6 +38,7 @@ pub const SecurityPolicy = policy.SecurityPolicy;
 pub const PairingGuard = pairing.PairingGuard;
 pub const constantTimeEq = pairing.constantTimeEq;
 pub const isPublicBind = pairing.isPublicBind;
+pub const isYoloGatewayAllowed = pairing.isYoloGatewayAllowed;
 
 pub const SecretStore = secrets.SecretStore;
 pub const encrypt = secrets.encrypt;

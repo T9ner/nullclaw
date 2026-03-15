@@ -10,6 +10,7 @@ const Config = @import("config.zig").Config;
 const daemon = @import("daemon.zig");
 const http_util = @import("http_util.zig");
 const providers = @import("providers/root.zig");
+const security = @import("security/root.zig");
 
 const SERVICE_LABEL = "com.nullclaw.daemon";
 const WINDOWS_SERVICE_NAME = "nullclaw";
@@ -688,12 +689,34 @@ fn applyServiceRuntimeProviderOverrides(config: *const Config) !void {
     try providers.setApiErrorLimitOverride(config.diagnostics.api_error_max_chars);
 }
 
+fn isTruthyFlag(value: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(value, "1") or
+        std.ascii.eqlIgnoreCase(value, "true") or
+        std.ascii.eqlIgnoreCase(value, "yes") or
+        std.ascii.eqlIgnoreCase(value, "on");
+}
+
+fn isYoloForceEnabled(allocator: std.mem.Allocator) bool {
+    if (platform.getEnvOrNull(allocator, "NULLCLAW_ALLOW_YOLO")) |v| {
+        defer allocator.free(v);
+        if (isTruthyFlag(v)) return true;
+    }
+    if (platform.getEnvOrNull(allocator, "OPENCLAW_ALLOW_YOLO")) |v| {
+        defer allocator.free(v);
+        if (isTruthyFlag(v)) return true;
+    }
+    return false;
+}
+
 fn runWindowsServiceGatewayProcess(allocator: std.mem.Allocator) !void {
     var cfg = try Config.load(allocator);
     defer cfg.deinit();
 
     try cfg.validate();
     try applyServiceRuntimeProviderOverrides(&cfg);
+    if (!security.isYoloGatewayAllowed(cfg.autonomy.level, cfg.gateway.host, isYoloForceEnabled(allocator))) {
+        return error.InsecureYoloGatewayBind;
+    }
 
     updateWindowsServiceStatus(SERVICE_RUNNING, SERVICE_NO_ERROR, 0);
     try daemon.run(allocator, &cfg, cfg.gateway.host, cfg.gateway.port);

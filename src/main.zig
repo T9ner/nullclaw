@@ -334,19 +334,6 @@ fn isYoloForceEnabled(allocator: std.mem.Allocator) bool {
     return false;
 }
 
-fn isLoopbackGatewayHost(host: []const u8) bool {
-    return std.ascii.eqlIgnoreCase(host, "localhost") or
-        std.mem.eql(u8, host, "127.0.0.1") or
-        std.mem.eql(u8, host, "::1") or
-        std.mem.eql(u8, host, "[::1]");
-}
-
-fn isYoloGatewayAllowed(level: yc.security.AutonomyLevel, host: []const u8, forced: bool) bool {
-    if (level != .yolo) return true;
-    if (forced) return true;
-    return isLoopbackGatewayHost(host);
-}
-
 // ── Gateway ──────────────────────────────────────────────────────
 
 fn printGatewayUsage() void {
@@ -399,7 +386,7 @@ fn runGateway(allocator: std.mem.Allocator, sub_args: []const []const u8) !void 
         std.process.exit(1);
     };
 
-    if (!isYoloGatewayAllowed(cfg.autonomy.level, cfg.gateway.host, isYoloForceEnabled(allocator))) {
+    if (!yc.security.isYoloGatewayAllowed(cfg.autonomy.level, cfg.gateway.host, isYoloForceEnabled(allocator))) {
         std.debug.print(
             "Refusing to start gateway with autonomy.level=yolo on non-local host '{s}'. Use localhost or set NULLCLAW_ALLOW_YOLO=1 to force this insecure mode.\n",
             .{cfg.gateway.host},
@@ -3946,19 +3933,23 @@ test "applyGatewayDaemonOverrides rejects invalid port" {
 }
 
 test "isYoloGatewayAllowed rejects remote host without force" {
-    try std.testing.expect(!isYoloGatewayAllowed(.yolo, "0.0.0.0", false));
+    try std.testing.expect(!yc.security.isYoloGatewayAllowed(.yolo, "0.0.0.0", false));
 }
 
 test "isYoloGatewayAllowed allows localhost without force" {
-    try std.testing.expect(isYoloGatewayAllowed(.yolo, "127.0.0.1", false));
+    try std.testing.expect(yc.security.isYoloGatewayAllowed(.yolo, "127.0.0.1", false));
+}
+
+test "isYoloGatewayAllowed allows full ipv6 loopback without force" {
+    try std.testing.expect(yc.security.isYoloGatewayAllowed(.yolo, "0:0:0:0:0:0:0:1", false));
 }
 
 test "isYoloGatewayAllowed allows force override" {
-    try std.testing.expect(isYoloGatewayAllowed(.yolo, "0.0.0.0", true));
+    try std.testing.expect(yc.security.isYoloGatewayAllowed(.yolo, "0.0.0.0", true));
 }
 
 test "isYoloGatewayAllowed allows non-yolo levels" {
-    try std.testing.expect(isYoloGatewayAllowed(.supervised, "0.0.0.0", false));
+    try std.testing.expect(yc.security.isYoloGatewayAllowed(.supervised, "0.0.0.0", false));
 }
 
 test "hasConfiguredStartableChannels ignores cli and webhook-only defaults" {
