@@ -450,7 +450,7 @@ const models_dev_providers = [_]ModelsDevProvider{
     .{ .canonical = "minimax", .key = "minimax" },
     .{ .canonical = "cohere", .key = "cohere" },
     .{ .canonical = "perplexity", .key = "perplexity" },
-    .{ .canonical = "novita", .key = "novita" },
+    .{ .canonical = "novita", .key = "novita-ai" },
     .{ .canonical = "nvidia", .key = "nvidia" },
     .{ .canonical = "bedrock", .key = "amazon-bedrock" },
     .{ .canonical = "copilot", .key = "github-copilot" },
@@ -4453,6 +4453,7 @@ test "modelsDevProviderKey maps known providers" {
     try std.testing.expectEqualStrings("google", modelsDevProviderKey("gemini").?);
     try std.testing.expectEqualStrings("google-vertex", modelsDevProviderKey("vertex").?);
     try std.testing.expectEqualStrings("zai", modelsDevProviderKey("z.ai").?);
+    try std.testing.expectEqualStrings("novita-ai", modelsDevProviderKey("novita").?);
     try std.testing.expect(modelsDevProviderKey("ollama") == null);
 }
 
