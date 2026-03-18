@@ -23,6 +23,7 @@ const http_util = @import("http_util.zig");
 const json_util = @import("json_util.zig");
 const util = @import("util.zig");
 const bootstrap_mod = @import("bootstrap/root.zig");
+const gemini_cli_mod = @import("providers/gemini_cli.zig");
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -135,6 +136,7 @@ pub const known_providers = [_]ProviderInfo{
     .{ .key = "claude-cli", .label = "Claude CLI (claude code, local)", .default_model = "claude-opus-4-6", .env_var = "ANTHROPIC_API_KEY" },
     .{ .key = "codex-cli", .label = "Codex CLI (local CLI)", .default_model = codex_support.DEFAULT_CODEX_MODEL, .env_var = "OPENAI_API_KEY" },
     .{ .key = "openai-codex", .label = "OpenAI Codex (ChatGPT login)", .default_model = codex_support.DEFAULT_CODEX_MODEL, .env_var = "" },
+    .{ .key = "gemini-cli", .label = "Gemini CLI (Google Gemini, local)", .default_model = "gemini-2.0-flash", .env_var = "GEMINI_API_KEY" },
 };
 
 /// Canonicalize provider name (handle aliases).
@@ -189,6 +191,7 @@ fn providerRequiresApiKeyForSetup(provider: []const u8, base_url: ?[]const u8) b
         std.mem.eql(u8, canonical, "lmstudio") or
         std.mem.eql(u8, canonical, "claude-cli") or
         std.mem.eql(u8, canonical, "codex-cli") or
+        std.mem.eql(u8, canonical, "gemini-cli") or
         std.mem.eql(u8, canonical, "openai-codex"))
     {
         return false;
@@ -317,6 +320,12 @@ pub const ModelsCacheEntry = struct {
     fetched_at: i64,
 };
 
+const gemini_cli_fallback = [_][]const u8{
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+};
+
 /// Hardcoded fallback models for each provider (used when API fetch fails).
 pub fn fallbackModelsForProvider(provider: []const u8) []const []const u8 {
     const canonical = canonicalProviderName(provider);
@@ -331,6 +340,7 @@ pub fn fallbackModelsForProvider(provider: []const u8) []const []const u8 {
     if (std.mem.eql(u8, canonical, "claude-cli")) return &claude_cli_fallback;
     if (std.mem.eql(u8, canonical, "codex-cli")) return &codex_support.codex_model_fallbacks;
     if (std.mem.eql(u8, canonical, "openai-codex")) return &codex_support.codex_model_fallbacks;
+    if (std.mem.eql(u8, canonical, "gemini-cli")) return &gemini_cli_fallback;
 
     // For providers without a curated fallback list, return a single-item fallback
     // based on the onboarding default model for that provider.
@@ -501,6 +511,14 @@ pub fn fetchModelsFromApi(allocator: std.mem.Allocator, provider: []const u8, ap
 
     if (std.mem.eql(u8, canonical, "codex-cli") or std.mem.eql(u8, canonical, "openai-codex")) {
         return codex_support.loadCodexModels(allocator);
+    }
+
+    // For the gemini CLI, try to fetch models dynamically via `gemini -p "/model"`;
+    // fall back to the static list when the CLI is unavailable or returns nothing.
+    if (std.mem.eql(u8, canonical, "gemini-cli")) {
+        const dynamic = gemini_cli_mod.GeminiCliProvider.fetchModels(allocator);
+        if (dynamic.len > 0) return dynamic;
+        return dupeFallbackModels(allocator, canonical);
     }
 
     if (fetchModelsFromNativeApi(allocator, canonical, api_key) catch null) |models| {
@@ -3025,6 +3043,7 @@ test "providerRequiresApiKeyForSetup marks local and OAuth providers as keyless"
     try std.testing.expect(!providerRequiresApiKeyForSetup("ollama", null));
     try std.testing.expect(!providerRequiresApiKeyForSetup("lm-studio", null));
     try std.testing.expect(!providerRequiresApiKeyForSetup("claude-cli", null));
+    try std.testing.expect(!providerRequiresApiKeyForSetup("gemini-cli", null));
     try std.testing.expect(!providerRequiresApiKeyForSetup("codex-cli", null));
     try std.testing.expect(!providerRequiresApiKeyForSetup("openai-codex", null));
     try std.testing.expect(!providerRequiresApiKeyForSetup("custom:http://127.0.0.1:8080/v1", "http://127.0.0.1:8080/v1"));
@@ -3945,7 +3964,7 @@ test "catalog_providers names are unique" {
 test "wizard promptChoice returns default for out-of-range" {
     // This tests the logic without actual I/O by validating the
     // boundary: max providers is known_providers.len
-    try std.testing.expect(known_providers.len == 35);
+    try std.testing.expect(known_providers.len == 36);
     // The wizard would clamp to default (0) for out of range input
 }
 
