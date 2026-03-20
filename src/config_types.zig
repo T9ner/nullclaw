@@ -1517,6 +1517,14 @@ pub const McpServerConfig = struct {
             }
         }
         if (std.mem.eql(u8, host, "[::1]")) return true;
+        // Tailscale / CGNAT range 100.64.0.0/10
+        if (std.mem.startsWith(u8, host, "100.")) {
+            const rest = host[4..];
+            if (rest.len >= 2) {
+                const octet = std.fmt.parseInt(u8, rest[0 .. std.mem.indexOfScalar(u8, rest, '.') orelse rest.len], 10) catch return false;
+                if (octet >= 64 and octet <= 127) return true;
+            }
+        }
         return false;
     }
 
@@ -1679,6 +1687,12 @@ test "McpServerConfig http url validation" {
     try std.testing.expect(McpServerConfig.isValidHttpUrl("http://192.168.1.1:8080/rpc"));
     try std.testing.expect(McpServerConfig.isValidHttpUrl("http://172.16.0.1:8080/rpc"));
     try std.testing.expect(!McpServerConfig.isValidHttpUrl("http://example.com:6000/mcp"));
+    // http:// allowed for Tailscale / CGNAT range 100.64.0.0/10
+    try std.testing.expect(McpServerConfig.isValidHttpUrl("http://100.64.0.1:8931/mcp"));
+    try std.testing.expect(McpServerConfig.isValidHttpUrl("http://100.120.137.95:8931/mcp"));
+    try std.testing.expect(McpServerConfig.isValidHttpUrl("http://100.127.255.254:6000/mcp"));
+    try std.testing.expect(!McpServerConfig.isValidHttpUrl("http://100.128.0.1:8080/rpc"));
+    try std.testing.expect(!McpServerConfig.isValidHttpUrl("http://100.63.0.1:8080/rpc"));
 }
 
 test "McpServerConfig timeout defaults" {
