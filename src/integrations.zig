@@ -88,6 +88,7 @@ const all_integrations_list = [_]IntegrationEntry{
     .{ .name = "Nextcloud Talk", .description = "Self-hosted Nextcloud chat", .category = .chat, .status = .coming_soon },
     .{ .name = "Zalo", .description = "Zalo Bot API", .category = .chat, .status = .coming_soon },
     .{ .name = "DingTalk", .description = "DingTalk Stream Mode", .category = .chat, .status = .available },
+    .{ .name = "IRC", .description = "IRC servers (Libera, MeshRelay, etc.)", .category = .chat, .status = .available },
     // AI Models
     .{ .name = "OpenRouter", .description = "200+ models, 1 API key", .category = .ai_model, .status = .available },
     .{ .name = "Anthropic", .description = "Claude 3.5/4 Sonnet & Opus", .category = .ai_model, .status = .available },
@@ -115,6 +116,7 @@ const all_integrations_list = [_]IntegrationEntry{
     .{ .name = "Together AI", .description = "Open-source model hosting", .category = .ai_model, .status = .available },
     .{ .name = "Fireworks AI", .description = "Fast open-source inference", .category = .ai_model, .status = .available },
     .{ .name = "Cohere", .description = "Command R+ & embeddings", .category = .ai_model, .status = .available },
+    .{ .name = "Novita AI", .description = "Multi-model inference platform", .category = .ai_model, .status = .available },
     // Productivity
     .{ .name = "GitHub", .description = "Code, issues, PRs", .category = .productivity, .status = .coming_soon },
     .{ .name = "Notion", .description = "Workspace & databases", .category = .productivity, .status = .coming_soon },
