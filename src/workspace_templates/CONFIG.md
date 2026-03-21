@@ -1,23 +1,23 @@
 # CONFIG.md - Generated Config Guide
 
-This file explains the main settings that `nullclaw onboard` writes to `config.json`.
+This file is a quick guide to the main settings that `nullclaw onboard` configures in `config.json`.
+It is intentionally scoped to the most common onboarding fields, not the full config schema.
 
 ## Core Fields
 
-- `workspace`: workspace directory used for local files and bootstrap docs.
-- `models.providers.<provider>.api_key`: provider credential. Usually omitted when you rely on an env var.
-- `models.providers.<provider>.base_url`: custom endpoint override. Most providers do not need this.
+- `workspace`: workspace directory used for local files and generated bootstrap docs.
+- `models.providers.<provider>.api_key`: provider credential. Onboarding writes this only if you enter a key; env vars still work.
+- `models.providers.<provider>.base_url`: custom endpoint override used for custom/OpenAI-compatible providers and similar manual endpoint overrides.
 - `agents.defaults.model.primary`: default model route in `provider/model` format.
 
 ## Common Defaults
 
-- `default_temperature`: defaults to `0.7` unless you change it manually.
-- `agents.defaults.heartbeat.every`: defaults to `30m`.
-- `agents.defaults.heartbeat.enabled`: defaults to `true`.
+- `default_temperature`: effective default `0.7`.
 - `memory.backend`: backend selected during onboarding.
 - `memory.profile`: derived from the backend choice.
 - `memory.auto_save`: backend-specific default chosen by onboarding.
 - `tunnel.provider`: one of `none`, `cloudflare`, `ngrok`, `tailscale`.
+- `agents.defaults.heartbeat`: onboarding normally leaves heartbeat at runtime defaults (`every: 30m`, `enabled: false`) until you edit it manually.
 
 ## Autonomy Settings
 

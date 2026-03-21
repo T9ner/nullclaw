@@ -4072,6 +4072,7 @@ test "configTemplate contains generated config guide" {
     try std.testing.expect(std.mem.indexOf(u8, tmpl, "CONFIG.md - Generated Config Guide") != null);
     try std.testing.expect(std.mem.indexOf(u8, tmpl, "`agents.defaults.model.primary`") != null);
     try std.testing.expect(std.mem.indexOf(u8, tmpl, "`memory.backend`") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tmpl, "`enabled: false`") != null);
 }
 
 test "identityTemplate contains agent name" {
